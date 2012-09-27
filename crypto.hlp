@@ -1,0 +1,273 @@
+digest
+
+ SYNOPSIS
+  Compute message digest
+
+ USAGE
+  BString_Type digest(msg, method)
+
+ DESCRIPTION
+  The  `digest' function is  used to  compute the  one way  hashing of
+  `msg' (a  String or BString)  using the particular  hashing function
+  `method' (a  string).  This function uses the  OpenSSL library which
+  defines at least the following hash functions:
+  
+  md5, md4, md2, sha1, sha, sha224, sha256, sha384, sha512,
+  mdc2, ripemd160
+
+  This function returns the binary string of the hashing result. A
+  common way to represend message digests is in hex format, see the
+  `hexify' function.
+
+ EXAMPLE
+  The following example shows how to compute both the md5 and
+  sha1 checksum of the message "hello world".
+
+     digest_md5 = hexify(digest("hello world","md5"));
+     digest_sha1 = hexify(digest("hello world","sha1"));
+     
+     vmessage("md5 checksum = %s\nsha1 checksum= %s",
+              digest_md5,digest_sha1);
+
+  results in:
+
+     md5 checksum = 5eb63bbbe01eeed093cb22bb8f5acdc3
+     sha1 checksum= 2aae6c35c94fcfb415dbe95f408b9ce91ee846ed
+
+ SEE ALSO
+  hexify, hmac, _getkeyiv
+
+--------------------------------------------------------------
+
+hexify
+
+ SYNOPSIS
+  Return a hexidecimal representation of a byte string
+  
+ USAGE
+  String_Type hexify(bytes)
+
+ DESCRIPTION 
+  The hexidecimal representation maps nybbles (4 bits or half of a
+  byte) to a single character between 0 and F, where A-F represent
+  11-16 (one nybble has possible value up to 2^4=16). Each byte is
+  always represented by two characters, i.e. if the first nybble is
+  empty it will still be represented by 0.
+
+--------------------------------------------------------------
+
+hmac
+
+ SYNOPSIS
+  Hashed Message Authentication Code
+  
+ USAGE
+  BString_Type hmac(msg, key, method)
+  
+ DESCRIPTION
+  HMAC is typically used to authenticate a remote user, for instance
+  connected via an INET domain socket. Given a pre-known key (not
+  transmitted), a random message is created and transmitted to the
+  remote user, their response can then be compared to what the local
+  end gets by using hmac with the random message and known key. If
+  these are identical, the user can be trusted.
+
+  `method' determines the digest algorithm to use. See `digest' for
+  more information. This function will then use `method' to hash `msg'
+  with `key'.
+
+ EXAMPLE
+
+  The following example illustrates how hmac might be used to
+  authenticate a remote user, using sha1 (20 byte hash).
+
+     msg=pack("I2",rand(2));
+     write(remote_host_socket,msg);
+     ()=read(remote_host_socket,&response,20);
+     if (response != hmac(msg,"password","sha1"){
+        throw ForbiddenError,"Could not authenticate user";
+     }
+     else {
+        ... % do something useful
+     }
+
+ SEE ALSO
+  digest, hexify
+
+--------------------------------------------------------------
+
+encrypt
+
+ SYNOPSIS
+  symmetric cipher encryption
+
+ USAGE
+  encrypt(data, pass)
+  
+ DESCRIPTION
+  Encrypt `data' by deriving a key and possibly an input vector out of
+  `pass'. Optional arguments can be passed as qualifiers. This
+  function accepts the following qualifiers:
+
+  alg = symmetric-cipher-algorithm
+     Any OpenSSL supported symmetric cipher algorithm passes as a
+     string. For example, this defaults to "aes-256-cbc". See help
+     item `cipher_list' for more info.
+
+  md = key-message-digest
+     Specify the message digest to use for key generation, as
+     string. See `_genkeyiv' for more information.
+
+  rounds = num
+     Number of rounds to perform for key generation, an integer. See
+     `_genkeyiv' for more information
+
+  The arguments concerning key and iv generation default to those
+  compatible with OpenSSL command line tools, so that, by default,
+  data encrypted using this function, can be decrypted using those
+  tools. As such, this function defaults to use salting and prepends
+  the salt indicator and value to its output (as understood by
+  OpenSSL). See the lower level function `_encrypt' if you would like
+  to forgoe salting or need to specify the key and iv directly.
+
+ SEE ALSO
+  decrypt, cipher_list, _encrypt, _decrypt, _genkeyiv
+
+--------------------------------------------------------------
+
+decrypt
+
+ SYNOPSIS
+  Symmetric cipher decryption
+
+ USAGE
+  decrypt(data, pass)
+
+ DESCRIPTION
+  This performs the inverse of the `encrypt' function, and accepts all
+  the same optional qualifiers. See `encrypt' for details
+
+ SEE ALSO
+  encrypt, cipher_list, _encrypt, _decrypt, _genkeyiv
+
+--------------------------------------------------------------
+
+_genkeyiv
+
+ SYNOPSIS
+  Generate a key and input vector pair from a password
+
+ USAGE
+  _genkeyiv(pass, salt, rounds, alg, md)
+
+ DESCRIPTION
+  This function wraps the OpenSSL library function EVP_BytesToKey, see
+  the documentation for details on the algorithm used to compute the
+  key hash, specifically the meading of the `rounds' argument. 
+
+  The `salt' argument is used ensure that a particular password will
+  not generate the same key and iv twice. It must be either an empty
+  string ("") or an 8-Byte bstring. The salt is most often a random
+  8-Bytes that is then concatenated with encrypted data so that a text
+  password can be used to decrypt without the need to know the raw key
+  and IV. The `encrypt' function does this, using the same parameters
+  as OpenSSL command line tools.
+
+  The `alg' argument is any OpenSSL symmetric cipher spec, and is used
+  to determine the appropriate key and iv length to generate.
+
+  Finally, `md' tells which digest algorithm to use in generating the
+  key.
+
+ SEE ALSO
+  decrypt, encrypt, cipher_list, _encrypt, _decrypt, digest
+
+--------------------------------------------------------------
+
+_encrypt
+
+ SYNOPSIS
+  Lower level function for symmetric encryption
+
+ USAGE
+  _encrypt(data, key, iv, alg)
+
+ DESCRIPTION
+  This does the exact same thing as the `encrypt' function except with
+  explicitly specified key and iv, instead of deriving these from a
+  password.
+
+ EXAMPLE
+  Its best to describe with an example. This is what the `encrypt'
+  function actually does with its default input, assuming variables
+  data and pass are already initialized.
+
+    variable salt=pack("I2",rand(2));
+    (key,iv) = _genkeyiv(pass,salt,1,"aes-256-cbc","md5");
+    %
+    % Encrypt the data
+    %
+    variable out=_encrypt(data,key,iv,alg);
+    %
+    % Add in the salt indicator and salt value
+    %
+    out="Salted__"+salt+out;
+
+ SEE ALSO
+  decrypt, encrypt, cipher_list, _decrypt, _genkeyiv
+
+--------------------------------------------------------------
+
+_decrypt
+
+ SYNOPSIS
+  Lower level symmetric cipher decryption
+
+ USAGE
+  _decrypt(data, key, iv, alg)
+
+ DESCRIPTION
+  This performs the inverse of the `_encrypt' function, and accepts
+  all the same arguments. See `_encrypt' for details
+
+ SEE ALSO
+  decrypt, encrypt, cipher_list, _encrypt, _genkeyiv
+
+--------------------------------------------------------------
+
+cipher_list
+
+ SYNOPSIS
+  (partial) listing of available OpenSSL ciphers
+
+ DESCRIPTION
+  This is not meant to be complete or even accurate. Certain installs
+  of OpenSSL may have been compiled with limited support for some of
+  these algorithms.
+
+   aes-128-cbc                aes-128-cfb                aes-128-cfb1
+   aes-128-cfb8               aes-128-ecb                aes-128-ofb
+   aes-192-cbc                aes-192-cfb                aes-192-cfb1
+   aes-192-cfb8               aes-192-ecb                aes-192-ofb
+   aes-256-cbc                aes-256-cfb                aes-256-cfb1
+   aes-256-cfb8               aes-256-ecb                aes-256-ofb
+   aes128                     aes192                     aes256
+   bf                         bf-cbc                     bf-cfb
+   bf-ecb                     bf-ofb                     blowfish
+   cast                       cast-cbc                   cast5-cbc
+   cast5-cfb                  cast5-ecb                  cast5-ofb
+   des                        des-cbc                    des-cfb
+   des-cfb1                   des-cfb8                   des-ecb
+   des-ede                    des-ede-cbc                des-ede-cfb
+   des-ede-ofb                des-ede3                   des-ede3-cbc
+   des-ede3-cfb               des-ede3-ofb               des-ofb
+   des3                       desx                       desx-cbc
+   rc2                        rc2-40-cbc                 rc2-64-cbc
+   rc2-cbc                    rc2-cfb                    rc2-ecb
+   rc2-ofb                    rc4                        rc4-40
+   rc5                        rc5-cbc                    rc5-cfb
+   rc5-ecb                    rc5-ofb                    seed
+   seed-cbc                   seed-cfb                   seed-ecb
+   seed-ofb
+
+--------------------------------------------------------------
