@@ -10,7 +10,27 @@ public define hexify (){
     if (typeof(data)==String_Type||typeof(data)==BString_Type){
 	data=bstring_to_array(data);
     }
-    return strjoin(array_map(String_Type,&sprintf,"%02x",data),"");
+    return strjoin(array_map(String_Type,&sprintf,"%02x",data));
+}
+
+public define unhexify (){
+    variable data=();
+    variable arr=bstring_to_array(strtrans(data,"\\l","\\u"));
+    variable out=UChar_Type[length(arr)/2];
+    variable tmp=UChar_Type[2];
+    variable i,j;
+    _for i (0,length(arr)-2,2){
+	_for j (0,1,1){
+	    if (arr[i+j] <= '9'){
+		tmp[j]=arr[i+j]-'0';
+	    }
+	    else {
+		tmp[j]=arr[i+j]-'A'+10;
+	    }
+	}
+	out[i/2]=16*tmp[0]+tmp[1];
+    }
+    return array_to_bstring(out);
 }
 
 %

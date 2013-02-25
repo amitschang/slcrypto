@@ -330,6 +330,14 @@ static void sl_generate_key (void){
 #define SSL_PROTO_SSL23 3
 #define SSL_PROTO_ANY 4
 
+static int SLsslctx_Type_Id = -1;
+typedef struct
+{
+  void *ctx;
+  int is_server;
+}
+SLsslctx_Type;
+
 static int SLssl_Type_Id = -1;
 typedef struct
 {
@@ -347,21 +355,19 @@ static void sl_ssl_server (void){
   // this is the server, so it also needs the certfile and private key
   SSL_CTX *ctx;
   SSL *ssl;
-  int proto, pkey_type, cert_type, fd;
+  int proto, pkey_type, cert_type;
   SLang_MMT_Type *sslmmt;
   SLFile_FD_Type *slfd;
-  char *pkey, *cert;
-  SLssl_Type *slssl;
+  SLsslctx_Type *slctx;
+  char *pkey=NULL, *cert=NULL;
 
-  if (SLang_pop_integer(&proto) == -1 ||
-      SLang_pop_slstring(&pkey) == -1 ||
-      SLang_pop_integer(&pkey_type) == -1 ||
+  if (SLang_pop_slstring(&pkey) == -1 ||
       SLang_pop_slstring(&cert) == -1 ||
-      SLang_pop_integer(&cert_type) == -1 ||
-      SLfile_pop_fd(&slfd) == -1){
+      SLang_pop_integer(&proto) == -1){
+    goto free;
     return;
   }
-  
+
   if (proto==SSL_PROTO_SSL2)
     ctx = SSL_CTX_new(SSLv23_server_method());
   else if (proto==SSL_PROTO_SSL3)
@@ -372,59 +378,63 @@ static void sl_ssl_server (void){
     ctx = SSL_CTX_new(SSLv23_server_method());
 
   // now add the cert file an private key
-  SSL_CTX_use_certificate_file(ctx,cert,cert_type);
-  SSL_CTX_use_PrivateKey_file(ctx,pkey,pkey_type);
-  SLang_free_slstring(pkey);
-  SLang_free_slstring(cert);
+  if (1!=SSL_CTX_use_certificate_file(ctx,cert,SSL_FILETYPE_PEM))
+    if (1!=SSL_CTX_use_certificate_file(ctx,cert,SSL_FILETYPE_ASN1)){
+      SLang_verror(0,"Could not load certificate file");
+      goto free;
+    }
+  if (1!=SSL_CTX_use_PrivateKey_file(ctx,pkey,SSL_FILETYPE_PEM))
+    if (1!=SSL_CTX_use_PrivateKey_file(ctx,pkey,SSL_FILETYPE_ASN1)){
+      SLang_verror(0,"Could not load private key");
+      goto free;
+    }
+
   if (1!=SSL_CTX_check_private_key(ctx)){
     SLang_verror(0,"Certificate and private keys do not match");
-    return;
+    goto free;
   }
 
-  // create the ssl object
-  ssl = SSL_new(ctx);
-  
-  // set the file descriptor for input/output
-  SLfile_get_fd(slfd,&fd);
-  if (0==SSL_set_fd(ssl,fd))
-    return;
+  slctx = (SLsslctx_Type *)malloc(sizeof(SLsslctx_Type));
+  slctx->is_server = 1;
+  slctx->ctx = (void *)ctx;
 
-  fprintf(stderr,"Set server socket fd to %d\n",fd);
+  sslmmt = SLang_create_mmt(SLsslctx_Type_Id, (VOID_STAR) slctx);
 
-  slssl = (SLssl_Type *)malloc(sizeof(SLssl_Type));
-  slssl->ssl = (void *) ssl;
-  slssl->is_server = 1;
+  if (0!=SLang_push_mmt(sslmmt))
+    SLang_free_mmt(sslmmt);
 
-  sslmmt = SLang_create_mmt(SLssl_Type_Id, (VOID_STAR) slssl);
-
-  if (0==SLang_push_mmt(sslmmt))
-    return;
-  
-  SLang_free_mmt(sslmmt);
+ free:
+  if (NULL!=pkey)
+    SLang_free_slstring(pkey);
+  if (NULL!=cert)
+    SLang_free_slstring(cert);
 }
 
 static void sl_ssl_client (void){
   // create an ssl object and return the memory managed type back to
   // SLang. It needs the file descriptor of the object upon which
-  // communication will occur, and the protocol to use
+  // communication will occur, and the protocol to use.
   //
-  // this is the client, no certs by default
   SSL_CTX *ctx;
   SSL *ssl;
-  int proto;
-  SLFile_FD_Type *slfd;
-  int fd;
+  int proto, cret;
   SLang_MMT_Type *mmt, *sslmmt;
-  SLssl_Type *slssl;
+  SLsslctx_Type *slctx;
+  char *cadir=NULL, *cafile=NULL;  
 
-  if (SLang_pop_integer(&proto) == -1 ||
-      SLfile_pop_fd(&slfd) == -1){
-    return;
-  }
+  if (SLang_Num_Function_Args == 3)
+    if (SLang_pop_slstring(&cadir) == -1)
+      return;
 
-  SLfile_get_fd(slfd,&fd);
-  SLfile_free_fd(slfd);
-  
+  if (SLang_Num_Function_Args > 1)
+    if (SLANG_NULL_TYPE==SLang_peek_at_stack())
+      SLdo_pop();
+    else if (SLang_pop_slstring(&cafile) == -1)
+      goto free;
+      
+  if (SLang_pop_integer(&proto) == -1)
+    goto free;
+
   if (proto==SSL_PROTO_SSL2)
     ctx = SSL_CTX_new(SSLv23_client_method());
   else if (proto==SSL_PROTO_SSL3)
@@ -433,25 +443,69 @@ static void sl_ssl_client (void){
     ctx = SSL_CTX_new(TLSv1_client_method());
   else if (proto==SSL_PROTO_ANY)
     ctx = SSL_CTX_new(SSLv23_client_method());
+  
+  cret = SSL_CTX_load_verify_locations(ctx, cafile, cadir);
+
+  if (cret == 0 && SLang_Num_Function_Args > 1){
+    SLang_verror(SL_APPLICATION_ERROR, "Failed to load CA file or path");
+    goto free;
+  }
+
+  slctx = (SLsslctx_Type *)malloc(sizeof(SLsslctx_Type));
+  slctx->is_server = 0;
+  slctx->ctx = (void *)ctx;
+
+  sslmmt = SLang_create_mmt(SLsslctx_Type_Id, (VOID_STAR) slctx);
+
+  if (0!=SLang_push_mmt(sslmmt))
+    SLang_free_mmt(sslmmt);
+
+ free:
+  if (NULL!=cadir)
+    SLang_free_slstring(cadir);
+  if (NULL!=cafile)
+    SLang_free_slstring(cafile);
+}
+
+static void sl_ssl_connect (void){
+  int fd;
+  SLFile_FD_Type *slfd;
+  SLsslctx_Type *ctx;
+  SLssl_Type *slssl;
+  SSL *ssl;
+  SLang_MMT_Type *sslmmt;
+  SLang_MMT_Type *sslmmto;
+  
+  if (SLfile_pop_fd(&slfd) == -1)
+    return;
+  if (NULL==(sslmmt=SLang_pop_mmt(SLsslctx_Type_Id)))
+    return;
+
+  SLfile_get_fd(slfd,&fd);
+  SLfile_free_fd(slfd);
+
+  ctx = (SLsslctx_Type *)SLang_object_from_mmt(sslmmt);
 
   // create the ssl object
-  ssl = SSL_new(ctx);
+  ssl = SSL_new((SSL_CTX *)ctx->ctx);
   
   // set the file descriptor for input/output
   if (0==SSL_set_fd(ssl,fd)){
     return;
   }
-  fprintf(stderr,"Set client socket fd to %d\n",fd);
+  // fprintf(stderr,"Set client socket fd to %d\n",fd);
 
   slssl = (SLssl_Type *)malloc(sizeof(SLssl_Type));
   slssl->ssl = (void *) ssl;
-  slssl->is_server = 0;
+  slssl->is_server = ctx->is_server;
 
   sslmmt = SLang_create_mmt(SLssl_Type_Id, (VOID_STAR) slssl);
 
   if (0==SLang_push_mmt(sslmmt))
     return;
-}
+  
+  SLang_free_mmt(sslmmt);
+}  
 
 static void sl_ssl_handshake (void){
   SLssl_Type *ssl;
@@ -487,7 +541,7 @@ static void sl_ssl_verify(void){
 
   cert=SSL_get_peer_certificate((SSL *)ssl->ssl);
   if (cert==NULL)
-    SLang_push_integer(0);
+    SLang_push_integer(-1);
   else
     SLang_push_integer(SSL_get_verify_result((SSL *)ssl->ssl));
 
@@ -579,14 +633,19 @@ static void sl_ssl_read(void){
 }
 
 static void sl_destroy_ssl (SLtype type, VOID_STAR f){
-  /* SLssl_Type *ssl; */
-  /* ssl=(SLssl_Type *)*f; */
-  /* SSL_free((SSL *)f->ssl); */
+  SLssl_Type *ssl;
+  ssl=(SLssl_Type *)f;
+  SSL_free((SSL *)(ssl->ssl));
+}
+static void sl_destroy_sslctx (SLtype type, VOID_STAR f){
+  SLsslctx_Type *ctx;
+  ctx=(SLsslctx_Type *)f;
+  SSL_CTX_free((SSL_CTX *)(ctx->ctx));
 }
 
 static int register_classes (void)
 {
-  SLang_Class_Type *cl;
+  SLang_Class_Type *cl,*cl2;
 
   if (SLssl_Type_Id != -1)
     return 0;
@@ -603,6 +662,18 @@ static int register_classes (void)
 
   SLssl_Type_Id = SLclass_get_class_id (cl);
 
+  if (NULL == (cl2 = SLclass_allocate_class ("SLsslctx_Type")))
+    return -1;
+
+  (void) SLclass_set_destroy_function (cl2, sl_destroy_sslctx);
+
+  if (-1 == SLclass_register_class (cl2, SLANG_VOID_TYPE,
+                                    sizeof (SLsslctx_Type),
+                                    SLANG_CLASS_TYPE_MMT))
+    return -1;
+
+  SLsslctx_Type_Id = SLclass_get_class_id (cl2);
+
   return 0;
 }
 
@@ -616,6 +687,7 @@ static SLang_Intrin_Fun_Type Module_Intrinsics [] = {
   MAKE_INTRINSIC_0("base64_decode",sl_base64_decode,SLANG_VOID_TYPE),
   MAKE_INTRINSIC_0("ssl_server",sl_ssl_server,SLANG_VOID_TYPE),
   MAKE_INTRINSIC_0("ssl_client",sl_ssl_client,SLANG_VOID_TYPE),
+  MAKE_INTRINSIC_0("ssl_connect",sl_ssl_connect,SLANG_VOID_TYPE),
   MAKE_INTRINSIC_0("ssl_handshake",sl_ssl_handshake,SLANG_VOID_TYPE),
   MAKE_INTRINSIC_0("ssl_read",sl_ssl_read,SLANG_VOID_TYPE),
   MAKE_INTRINSIC_0("ssl_write",sl_ssl_write,SLANG_VOID_TYPE),
@@ -624,11 +696,16 @@ static SLang_Intrin_Fun_Type Module_Intrinsics [] = {
   SLANG_END_INTRIN_FUN_TABLE
 };
 
-static SLang_Intrin_Var_Type Module_Variables [] =
+static SLang_IConstant_Type Module_IConstants [] =
   {
-    MAKE_VARIABLE("SSL_FILETYPE_ASN1",2, SLANG_INT_TYPE, 0),
-    MAKE_VARIABLE("SSL_FILETYPE_PEM",1, SLANG_INT_TYPE, 0),
-    SLANG_END_INTRIN_VAR_TABLE
+    MAKE_ICONSTANT("SSL_FILETYPE_ASN1",SSL_FILETYPE_ASN1),
+    MAKE_ICONSTANT("SSL_FILETYPE_PEM",SSL_FILETYPE_PEM),
+    MAKE_ICONSTANT("SSL_PROTO_SSL2",SSL_PROTO_SSL2),
+    MAKE_ICONSTANT("SSL_PROTO_SSL3",SSL_PROTO_SSL3),
+    MAKE_ICONSTANT("SSL_PROTO_TLS1",SSL_PROTO_TLS1),
+    MAKE_ICONSTANT("SSL_PROTO_SSL23",SSL_PROTO_SSL23),
+    MAKE_ICONSTANT("SSL_PROTO_ANY",SSL_PROTO_ANY),
+    SLANG_END_ICONST_TABLE
   };
 
 SLANG_MODULE(crypto);
@@ -642,7 +719,7 @@ int init_crypto_module_ns (char *ns_name){
   
   if (
       (-1 == SLns_add_intrin_fun_table (ns, Module_Intrinsics, NULL)) ||
-      (-1 == SLns_add_intrin_var_table (ns, Module_Variables, NULL))
+      (-1 == SLns_add_iconstant_table (ns, Module_IConstants, NULL))
       )
     return -1;
   
