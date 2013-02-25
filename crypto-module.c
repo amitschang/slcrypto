@@ -551,28 +551,40 @@ static void sl_ssl_verify(void){
 static void sl_ssl_get_cert(void){
   SLssl_Type *ssl;
   SLang_MMT_Type *sslmmt;
-  X509 *cert;
-  int len;
-  unsigned char *buf;
-  SLang_BString_Type *certout;
+  STACK_OF(X509) *cert;
+  unsigned char **buf;
+  SLang_BString_Type **certout;
+  SLang_Array_Type *arr;
+  SLindex_Type nelem;
+  int len,i;
 
   if (NULL==(sslmmt=SLang_pop_mmt(SLssl_Type_Id)))
     return;
 
   ssl=(SLssl_Type *)SLang_object_from_mmt(sslmmt);
 
-  cert=SSL_get_peer_certificate((SSL *)ssl->ssl);
+  cert=SSL_get_peer_cert_chain((SSL *)ssl->ssl);
 
-  buf = NULL;
+  if (cert==NULL)
+    return NULL;
+
+  nelem=(SLindex_Type)sk_X509_num(cert);
+  // now we have chain of certs, create array of pointers and the
+  // array to hold them
+  buf = (unsigned char **)malloc(nelem*sizeof(unsigned char *));
+  arr = SLang_create_array(SLANG_BSTRING_TYPE,0,NULL,&nelem,1);
+  // array data structure is of bstring type
+  certout = (SLang_BString_Type **)arr->data;
   
-  len = i2d_X509(cert, &buf);
-
-  if (len>0){
-    certout=SLbstring_create(buf,len);
-    SLang_push_bstring(certout);
-    SLbstring_free(certout);
+  for (i=0;i<nelem;i++){
+    buf[i] = NULL;
+    len = i2d_X509(sk_X509_value(cert,i), &(buf[i]));
+    certout[i] = SLbstring_create(buf[i],len);
   }
-  X509_free(cert);
+  
+  SLang_push_array(arr,1);
+  // free the X509 stack
+  sk_X509_pop_free(cert,X509_free);
 }
 
 static void sl_ssl_write(void){
